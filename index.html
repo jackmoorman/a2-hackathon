@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>CivilGrid AR — Utility X-Ray</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <!-- Layer 1: live camera feed -->
+  <video id="camera" playsinline autoplay muted></video>
+
+  <!-- Layer 2: projected GIS overlay -->
+  <canvas id="overlay"></canvas>
+
+  <!-- Layer 3: HUD -->
+  <div id="hud">
+    <div id="status" class="status">
+      <span class="dot" id="gps-dot"></span><span id="gps-text">GPS: —</span>
+      <span class="sep">|</span>
+      <span class="dot" id="hdg-dot"></span><span id="hdg-text">HDG: —</span>
+    </div>
+  </div>
+
+  <!-- Launch gate: required user gesture to unlock camera + motion sensors on iOS -->
+  <div id="gate">
+    <div class="gate-card">
+      <h1>CivilGrid AR</h1>
+      <p class="tagline">See the utilities beneath the street.</p>
+      <button id="launch">Launch AR</button>
+      <p class="hint">Point your phone at the ground. Allow camera, location &amp; motion when asked.</p>
+    </div>
+  </div>
+
+  <div id="error" class="error hidden"></div>
+
+  <script src="data/utilities.js"></script>
+  <script src="js/geo.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
