@@ -33,6 +33,11 @@
     densifyStep: 2,      // polyline sampling, meters
   };
 
+  // Features that projected on-screen during the most recent frame. Rebuilt
+  // every render() so capture.js can bake the visible properties into a photo
+  // or video. Each entry: { label, type, depth, distance }.
+  let visibleFeatures = [];
+
   const COLORS = {
     water: "#29b6ff",
     gas: "#ffb300",
@@ -218,7 +223,13 @@
 
       // Label at the midpoint vertex if visible.
       const mid = pts.find((p) => p.visible && p.x > 0 && p.x < screen.w);
-      if (mid) drawTag(mid.x, mid.y, line.label, color);
+      if (mid) {
+        drawTag(mid.x, mid.y, line.label, color);
+        visibleFeatures.push({
+          label: line.label, type: line.type,
+          depth: line.depth, distance: mid.distance,
+        });
+      }
     }
   }
 
@@ -245,6 +256,10 @@
       ctx.restore();
 
       drawTag(p.x, p.y - 18, `${pt.label} · ${Math.round(p.distance)}m`, color);
+      visibleFeatures.push({
+        label: pt.label, type: pt.type,
+        depth: pt.depth, distance: p.distance,
+      });
     }
   }
 
@@ -280,6 +295,7 @@
   function render() {
     const W = window.innerWidth, H = window.innerHeight;
     ctx.clearRect(0, 0, W, H);
+    visibleFeatures = [];
 
     if (state.model && state.heading !== null) {
       const pitch = state.tilt !== null ? state.tilt - 90 : 0;
@@ -321,8 +337,28 @@
     }
 
     els.gate.classList.add("hidden");
+    window.dispatchEvent(new CustomEvent("civilgrid:launched"));
     requestAnimationFrame(render);
   }
 
   els.launch.addEventListener("click", launch);
+
+  // ---- Capture bridge --------------------------------------------------
+  // Read-only accessors so js/capture.js can composite the live camera frame,
+  // the projected overlay, and the currently-visible feature properties into a
+  // saved photo or video without reaching into rendering internals.
+  window.CivilGridAR = {
+    video: els.camera,
+    overlay: els.overlay,
+    getState: () => state,
+    // De-duplicate by label so a densified polyline counts once, nearest first.
+    getVisibleFeatures() {
+      const byLabel = new Map();
+      for (const f of visibleFeatures) {
+        const prev = byLabel.get(f.label);
+        if (!prev || f.distance < prev.distance) byLabel.set(f.label, f);
+      }
+      return [...byLabel.values()].sort((a, b) => a.distance - b.distance);
+    },
+  };
 })();

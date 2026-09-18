@@ -23,6 +23,20 @@
       <span class="sep">|</span>
       <span class="dot" id="hdg-dot"></span><span id="hdg-text">HDG: —</span>
     </div>
+
+    <!-- Capture controls: mode toggle + shutter. Hidden until AR launches. -->
+    <div id="capture-ui" class="capture-ui hidden">
+      <div id="mode-toggle" class="mode-toggle" role="tablist" aria-label="Capture mode">
+        <button id="mode-photo" class="mode-btn active" role="tab" aria-selected="true">Photo</button>
+        <button id="mode-video" class="mode-btn" role="tab" aria-selected="false">Video</button>
+      </div>
+      <button id="shutter" class="shutter" aria-label="Capture">
+        <span class="shutter-inner"></span>
+      </button>
+      <div id="rec-timer" class="rec-timer hidden">0:00</div>
+    </div>
+
+    <div id="capture-toast" class="capture-toast hidden"></div>
   </div>
 
   <!-- Launch gate: required user gesture to unlock camera + motion sensors on iOS -->
@@ -40,5 +54,6 @@
   <script src="data/utilities.js"></script>
   <script src="js/geo.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/capture.js"></script>
 </body>
 </html>
