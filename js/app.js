@@ -25,6 +25,24 @@
     tilt: null,          // beta (front-back tilt) in degrees
   };
 
+  const CONFIG = {
+    cameraHeight: 1.5,   // phone height above ground, meters
+    hfov: 63,            // approximate horizontal camera FOV, degrees
+    densifyStep: 2,      // polyline sampling, meters
+  };
+
+  const COLORS = {
+    water: "#29b6ff",
+    gas: "#ffb300",
+    electric: "#ff4dd8",
+    sewer: "#22e07a",
+    manhole: "#cfd8dc",
+    valve: "#ffb300",
+    hydrant: "#ff5252",
+    _default: "#00e5ff",
+  };
+  const colorFor = (t) => COLORS[t] || COLORS._default;
+
   function showError(msg) {
     els.error.textContent = msg;
     els.error.classList.remove("hidden");
@@ -81,20 +99,20 @@
     if (typeof e.beta === "number") state.tilt = e.beta;
   }
 
-  async function startOrientation() {
+  // Must be called SYNCHRONOUSLY from the launch gesture (before any await),
+  // or iOS rejects with "requires a user gesture".
+  function requestOrientationPermission() {
     const DOE = window.DeviceOrientationEvent;
-    // iOS 13+ requires an explicit permission request from a user gesture.
     if (DOE && typeof DOE.requestPermission === "function") {
-      try {
-        const res = await DOE.requestPermission();
-        if (res !== "granted") {
-          els.hdgText.textContent = "HDG: denied";
-          return;
-        }
-      } catch (err) {
-        showError("Motion permission error: " + err.message);
-        return;
-      }
+      return DOE.requestPermission();
+    }
+    return Promise.resolve("granted"); // non-iOS: no prompt needed
+  }
+
+  function startOrientation(permissionResult) {
+    if (permissionResult !== "granted") {
+      els.hdgText.textContent = "HDG: denied";
+      return;
     }
     // Prefer the absolute (compass-referenced) event when available.
     window.addEventListener("deviceorientationabsolute", handleOrientation, true);
@@ -113,9 +131,120 @@
   window.addEventListener("resize", resizeCanvas);
   window.addEventListener("orientationchange", resizeCanvas);
 
+  // User's current local position (east/north meters) relative to origin.
+  function userLocal() {
+    if (!state.origin || !state.position) return { east: 0, north: 0 };
+    return Geo.toLocal(state.origin, state.position);
+  }
+
+  // Build a camera-relative ENU vector for a feature at local (east,north)
+  // and given depth below ground.
+  function relVector(feat, user, depth) {
+    return [
+      feat.east - user.east,
+      feat.north - user.north,
+      -(CONFIG.cameraHeight + depth),
+    ];
+  }
+
+  function drawLines(basis, screen, user) {
+    const W = window.UTILITIES.lines;
+    for (const line of W) {
+      const color = colorFor(line.type);
+      const pts = Geo.densify(line.path, CONFIG.densifyStep).map((v) => {
+        const rel = relVector(v, user, line.depth);
+        return Geo.project(rel, basis, screen);
+      });
+
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 12;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      let drawing = false;
+      for (const p of pts) {
+        if (!p.visible) { drawing = false; continue; }
+        if (!drawing) { ctx.moveTo(p.x, p.y); drawing = true; }
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Label at the midpoint vertex if visible.
+      const mid = pts.find((p) => p.visible && p.x > 0 && p.x < screen.w);
+      if (mid) drawTag(mid.x, mid.y, line.label, color);
+    }
+  }
+
+  function drawPoints(basis, screen, user) {
+    for (const pt of window.UTILITIES.points) {
+      const rel = relVector(pt, user, pt.depth);
+      const p = Geo.project(rel, basis, screen);
+      if (!p.visible) continue;
+
+      const color = colorFor(pt.type);
+      // Marker: filled diamond with glow.
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.fillStyle = color;
+      ctx.strokeStyle = "#04121a";
+      ctx.lineWidth = 2;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.moveTo(0, -9); ctx.lineTo(9, 0); ctx.lineTo(0, 9); ctx.lineTo(-9, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      drawTag(p.x, p.y - 18, `${pt.label} · ${Math.round(p.distance)}m`, color);
+    }
+  }
+
+  function drawTag(x, y, text, color) {
+    ctx.font = "600 13px -apple-system, system-ui, sans-serif";
+    const padX = 7, padY = 4;
+    const w = ctx.measureText(text).width + padX * 2;
+    const h = 20;
+    const bx = x - w / 2, by = y - h - 4;
+    ctx.fillStyle = "rgba(4, 18, 26, 0.72)";
+    roundRect(bx, by, w, h, 6);
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    roundRect(bx, by, w, h, 6);
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, x, by + h / 2 + 0.5);
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
   function render() {
-    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-    // Milestone 1: nothing projected yet. Projection lands in a later step.
+    const W = window.innerWidth, H = window.innerHeight;
+    ctx.clearRect(0, 0, W, H);
+
+    if (state.origin && state.heading !== null) {
+      const pitch = state.tilt !== null ? state.tilt - 90 : 0;
+      const basis = Geo.cameraBasis(state.heading, pitch);
+      const screen = { w: W, h: H, hfov: CONFIG.hfov };
+      const user = userLocal();
+      drawLines(basis, screen, user);
+      drawPoints(basis, screen, user);
+    }
     requestAnimationFrame(render);
   }
 
@@ -123,6 +252,10 @@
   async function launch() {
     els.launch.disabled = true;
     els.launch.textContent = "Starting…";
+
+    // Kick off the motion-permission request FIRST, inside the gesture.
+    const orientationPromise = requestOrientationPermission();
+
     try {
       await startCamera();
     } catch (err) {
@@ -133,7 +266,14 @@
     }
     resizeCanvas();
     startGeolocation();
-    await startOrientation();
+
+    try {
+      const res = await orientationPromise;
+      startOrientation(res);
+    } catch (err) {
+      showError("Motion permission error: " + err.message);
+    }
+
     els.gate.classList.add("hidden");
     requestAnimationFrame(render);
   }
