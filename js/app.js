@@ -313,14 +313,22 @@
     els.launch.disabled = true;
     els.launch.textContent = "Starting…";
 
-    // Kick off permission requests FIRST, inside the gesture, before any
-    // await — iOS drops the gesture context once the camera promise resolves,
-    // which otherwise makes geolocation and motion auto-deny.
+    // iOS presents only ONE permission dialog at a time and silently denies a
+    // request made while another dialog is open. Motion and camera both need
+    // the launch gesture, so fire them synchronously here (iOS queues them);
+    // geolocation is NOT gesture-gated, so start it only AFTER both dialogs
+    // have closed — otherwise it collides and gets auto-denied.
     const orientationPromise = requestOrientationPermission();
-    startGeolocation();
+    const cameraPromise = startCamera();
 
     try {
-      await startCamera();
+      startOrientation(await orientationPromise);
+    } catch (err) {
+      showError("Motion permission error: " + err.message);
+    }
+
+    try {
+      await cameraPromise;
     } catch (err) {
       showError("Camera error: " + err.message + " — AR needs HTTPS + camera permission.");
       els.launch.disabled = false;
@@ -329,12 +337,8 @@
     }
     resizeCanvas();
 
-    try {
-      const res = await orientationPromise;
-      startOrientation(res);
-    } catch (err) {
-      showError("Motion permission error: " + err.message);
-    }
+    // Dialogs are closed now — request location cleanly, on its own.
+    startGeolocation();
 
     els.gate.classList.add("hidden");
     window.dispatchEvent(new CustomEvent("civilgrid:launched"));
