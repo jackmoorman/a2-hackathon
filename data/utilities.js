@@ -70,5 +70,6 @@ window.GEOJSON = {
   ],
 };
 
-// First GeoJSON coordinate, used as a fallback origin if GPS is denied/absent.
-window.DEFAULT_ORIGIN = { lng: -84.4089701, lat: 40.2345297 };
+// Fallback origin if GPS is denied/absent: center of the Downtown Haverhill
+// network, so the primary demo dataset renders around the user.
+window.DEFAULT_ORIGIN = { lng: -71.085617, lat: 42.775736 };

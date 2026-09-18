@@ -27,8 +27,8 @@
   // Mirror of app.js's palette so the baked-in panel color-codes features
   // without reaching into rendering internals.
   const COLORS = {
-    water: "#29b6ff", gas: "#ffb300", electric: "#ff4dd8", sewer: "#22e07a",
-    manhole: "#cfd8dc", valve: "#ffb300", hydrant: "#ff5252", _default: "#00e5ff",
+    storm: "#19A92A", sewer: "#03F01F", water: "#257DF8", fiber: "#ff8c00",
+    gas: "#ffb300", electric: "#ff4dd8", _default: "#00e5ff",
   };
   const colorFor = (t) => COLORS[t] || COLORS._default;
 

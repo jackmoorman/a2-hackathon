@@ -28,9 +28,11 @@
   };
 
   const CONFIG = {
-    cameraHeight: 1.5,   // phone height above ground, meters
-    hfov: 63,            // approximate horizontal camera FOV, degrees
-    densifyStep: 2,      // polyline sampling, meters
+    cameraHeight: 1.5,     // phone height above ground, meters
+    hfov: 63,              // approximate horizontal camera FOV, degrees
+    densifyStep: 2,        // polyline sampling, meters
+    maxDistance: 140,      // cull features farther than this (meters)
+    maxLabelDistance: 45,  // only label features within this (meters)
   };
 
   // Features that projected on-screen during the most recent frame. Rebuilt
@@ -39,13 +41,13 @@
   let visibleFeatures = [];
 
   const COLORS = {
-    water: "#29b6ff",
+    storm: "#19A92A",
+    sewer: "#03F01F",
+    water: "#257DF8",
+    fiber: "#ff8c00",
+    // legacy sample types
     gas: "#ffb300",
     electric: "#ff4dd8",
-    sewer: "#22e07a",
-    manhole: "#cfd8dc",
-    valve: "#ffb300",
-    hydrant: "#ff5252",
     _default: "#00e5ff",
   };
   const colorFor = (t) => COLORS[t] || COLORS._default;
@@ -66,26 +68,44 @@
     const lines = window.UTILITIES.lines.map((l) => ({
       type: l.type, label: l.label, depth: l.depth, path: l.path,
     }));
+    const points = window.UTILITIES.points.map((p) => ({ ...p }));
 
-    const gj = window.GEOJSON;
-    if (gj && gj.features) {
-      for (const f of gj.features) {
-        if (!f.geometry || f.geometry.type !== "LineString") continue;
-        const p = f.properties || {};
+    ingestGeoJSON(window.GEOJSON, origin, lines, points);
+    ingestGeoJSON(window.HAVERHILL_GEOJSON, origin, lines, points);
+
+    state.model = { lines, points };
+    if (isFallback) {
+      showError("Using demo location (GPS unavailable). Overlay anchored to sample data.");
+    }
+  }
+
+  // Convert a GeoJSON FeatureCollection into local line/point features and
+  // append them to the model. LineStrings -> lines; Points -> markers colored
+  // by their utility network. Polygons (e.g. project boundary) are skipped.
+  function ingestGeoJSON(gj, origin, lines, points) {
+    if (!gj || !gj.features) return;
+    for (const f of gj.features) {
+      const g = f.geometry;
+      const p = f.properties || {};
+      if (!g) continue;
+      if (g.type === "LineString") {
         lines.push({
           type: p.type || "water",
           label: p.label || "GIS Line",
           depth: typeof p.depth === "number" ? p.depth : 1.0,
-          path: f.geometry.coordinates.map(([lng, lat]) =>
-            Geo.toLocal(origin, { lat, lng })
-          ),
+          path: g.coordinates.map(([lng, lat]) => Geo.toLocal(origin, { lat, lng })),
+        });
+      } else if (g.type === "Point") {
+        const [lng, lat] = g.coordinates;
+        const local = Geo.toLocal(origin, { lat, lng });
+        points.push({
+          type: p.network || p.type || "water", // color by network
+          label: p.label || p.assetType || "Asset",
+          depth: typeof p.depth === "number" ? p.depth : 0,
+          east: local.east,
+          north: local.north,
         });
       }
-    }
-
-    state.model = { lines, points: window.UTILITIES.points };
-    if (isFallback) {
-      showError("Using demo location (GPS unavailable). Overlay anchored to sample data.");
     }
   }
 
@@ -197,8 +217,21 @@
     ];
   }
 
+  // Horizontal distance from the user to the nearest vertex of a path.
+  function nearestDist(path, user) {
+    let min = Infinity;
+    for (const v of path) {
+      const d = Math.hypot(v.east - user.east, v.north - user.north);
+      if (d < min) min = d;
+    }
+    return min;
+  }
+
   function drawLines(basis, screen, user) {
     for (const line of state.model.lines) {
+      const near = nearestDist(line.path, user);
+      if (near > CONFIG.maxDistance) continue;
+
       const color = colorFor(line.type);
       const pts = Geo.densify(line.path, CONFIG.densifyStep).map((v) => {
         const rel = relVector(v, user, line.depth);
@@ -221,9 +254,9 @@
       ctx.stroke();
       ctx.shadowBlur = 0;
 
-      // Label at the midpoint vertex if visible.
+      // Label the closest lines only, to avoid clutter.
       const mid = pts.find((p) => p.visible && p.x > 0 && p.x < screen.w);
-      if (mid) {
+      if (mid && near <= CONFIG.maxLabelDistance) {
         drawTag(mid.x, mid.y, line.label, color);
         visibleFeatures.push({
           label: line.label, type: line.type,
@@ -235,6 +268,9 @@
 
   function drawPoints(basis, screen, user) {
     for (const pt of state.model.points) {
+      const horiz = Math.hypot(pt.east - user.east, pt.north - user.north);
+      if (horiz > CONFIG.maxDistance) continue;
+
       const rel = relVector(pt, user, pt.depth);
       const p = Geo.project(rel, basis, screen);
       if (!p.visible) continue;
@@ -255,11 +291,13 @@
       ctx.stroke();
       ctx.restore();
 
-      drawTag(p.x, p.y - 18, `${pt.label} · ${Math.round(p.distance)}m`, color);
-      visibleFeatures.push({
-        label: pt.label, type: pt.type,
-        depth: pt.depth, distance: p.distance,
-      });
+      if (horiz <= CONFIG.maxLabelDistance) {
+        drawTag(p.x, p.y - 18, `${pt.label} · ${Math.round(p.distance)}m`, color);
+        visibleFeatures.push({
+          label: pt.label, type: pt.type,
+          depth: pt.depth, distance: p.distance,
+        });
+      }
     }
   }
 
