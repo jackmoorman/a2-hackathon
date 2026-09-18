@@ -23,7 +23,8 @@
     position: null,      // latest { lat, lng, accuracy }
     heading: null,       // degrees, 0 = north, clockwise
     tilt: null,          // beta (front-back tilt) in degrees
-    model: null,         // { lines, points } in local east/north meters
+    model: null,         // { lines, points, polygons } in local east/north meters
+    geojson: null,
     originIsFallback: false,
   };
 
@@ -38,9 +39,12 @@
     gas: "#ffb300",
     electric: "#ff4dd8",
     sewer: "#22e07a",
+    storm: "#8b7cff",
+    catchbasin: "#8b7cff",
     manhole: "#cfd8dc",
     valve: "#ffb300",
     hydrant: "#ff5252",
+    project: "#ffffff",
     _default: "#00e5ff",
   };
   const colorFor = (t) => COLORS[t] || COLORS._default;
@@ -50,6 +54,69 @@
     els.error.classList.remove("hidden");
   }
 
+  function toLocalPath(origin, coords) {
+    return coords.map(([lng, lat]) => Geo.toLocal(origin, { lat, lng }));
+  }
+
+  function rebuildModel() {
+    if (!state.origin) return;
+    const origin = state.origin;
+
+    const lines = (window.UTILITIES.lines || []).map((l) => ({
+      type: l.type, label: l.label, depth: l.depth, path: l.path,
+    }));
+    const points = (window.UTILITIES.points || []).slice();
+    const polygons = [];
+
+    const gj = state.geojson || window.GEOJSON;
+    if (gj && gj.features) {
+      for (const f of gj.features) {
+        if (!f.geometry) continue;
+        const p = f.properties || {};
+        const depth = typeof p.depth === "number" ? p.depth : 1.0;
+        const type = p.type || "water";
+        const label = p.label || "GIS Feature";
+
+        if (f.geometry.type === "LineString") {
+          lines.push({
+            type,
+            label,
+            depth,
+            path: toLocalPath(origin, f.geometry.coordinates),
+          });
+        } else if (f.geometry.type === "Point") {
+          const [lng, lat] = f.geometry.coordinates;
+          const loc = Geo.toLocal(origin, { lat, lng });
+          points.push({
+            type,
+            label,
+            depth,
+            east: loc.east,
+            north: loc.north,
+          });
+        } else if (f.geometry.type === "Polygon") {
+          polygons.push({
+            type,
+            label,
+            depth: 0,
+            rings: f.geometry.coordinates.map((ring) => toLocalPath(origin, ring)),
+          });
+        } else if (f.geometry.type === "MultiPolygon") {
+          for (const polygon of f.geometry.coordinates) {
+            polygons.push({
+              type,
+              label,
+              depth: 0,
+              rings: polygon.map((ring) => toLocalPath(origin, ring)),
+            });
+          }
+        }
+      }
+    }
+
+    state.model = { lines, points, polygons };
+  }
+
   // Build the combined render model (local east/north meters) once we have an
   // origin. Offset features are used as-is; GeoJSON absolute coords are
   // converted relative to the origin.
@@ -57,31 +124,25 @@
     if (state.origin) return;
     state.origin = origin;
     state.originIsFallback = !!isFallback;
-
-    const lines = window.UTILITIES.lines.map((l) => ({
-      type: l.type, label: l.label, depth: l.depth, path: l.path,
-    }));
-
-    const gj = window.GEOJSON;
-    if (gj && gj.features) {
-      for (const f of gj.features) {
-        if (!f.geometry || f.geometry.type !== "LineString") continue;
-        const p = f.properties || {};
-        lines.push({
-          type: p.type || "water",
-          label: p.label || "GIS Line",
-          depth: typeof p.depth === "number" ? p.depth : 1.0,
-          path: f.geometry.coordinates.map(([lng, lat]) =>
-            Geo.toLocal(origin, { lat, lng })
-          ),
-        });
-      }
-    }
-
-    state.model = { lines, points: window.UTILITIES.points };
+    rebuildModel();
     if (isFallback) {
-      showError("Using demo location (GPS unavailable). Overlay anchored to sample data.");
+      showError("Using demo location (GPS unavailable). Overlay anchored to Downtown Haverhill.");
     }
+  }
+
+  async function loadGeoJSON() {
+    if (state.geojson) return;
+    if (window.GEOJSON && window.GEOJSON.features) {
+      state.geojson = window.GEOJSON;
+      rebuildModel();
+      return;
+    }
+    const url = window.GEOJSON_URL;
+    if (!url) return;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Could not load " + url);
+    state.geojson = await res.json();
+    rebuildModel();
   }
 
   // ---- Camera ----------------------------------------------------------
@@ -222,6 +283,34 @@
     }
   }
 
+  function drawPolygons(basis, screen, user) {
+    for (const poly of state.model.polygons || []) {
+      const color = colorFor(poly.type);
+      for (const ring of poly.rings) {
+        const pts = Geo.densify(ring, CONFIG.densifyStep).map((v) => {
+          const rel = relVector(v, user, poly.depth);
+          return Geo.project(rel, basis, screen);
+        });
+
+        ctx.lineWidth = 3;
+        ctx.setLineDash([10, 8]);
+        ctx.strokeStyle = color;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        let drawing = false;
+        for (const p of pts) {
+          if (!p.visible) { drawing = false; continue; }
+          if (!drawing) { ctx.moveTo(p.x, p.y); drawing = true; }
+          else ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.shadowBlur = 0;
+      }
+    }
+  }
+
   function drawPoints(basis, screen, user) {
     for (const pt of state.model.points) {
       const rel = relVector(pt, user, pt.depth);
@@ -286,6 +375,7 @@
       const basis = Geo.cameraBasis(state.heading, pitch);
       const screen = { w: W, h: H, hfov: CONFIG.hfov };
       const user = userLocal();
+      drawPolygons(basis, screen, user);
       drawLines(basis, screen, user);
       drawPoints(basis, screen, user);
     }
@@ -302,6 +392,9 @@
     // which otherwise makes geolocation and motion auto-deny.
     const orientationPromise = requestOrientationPermission();
     startGeolocation();
+    const dataPromise = loadGeoJSON().catch((err) => {
+      showError("Data error: " + err.message);
+    });
 
     try {
       await startCamera();
@@ -319,6 +412,7 @@
     } catch (err) {
       showError("Motion permission error: " + err.message);
     }
+    await dataPromise;
 
     els.gate.classList.add("hidden");
     requestAnimationFrame(render);
