@@ -19,10 +19,12 @@
 
   // Live sensor state, updated by watchers and read by the render loop.
   const state = {
-    origin: null,        // { lat, lng } captured at first GPS fix
+    origin: null,        // { lat, lng } used to anchor the local frame
     position: null,      // latest { lat, lng, accuracy }
     heading: null,       // degrees, 0 = north, clockwise
     tilt: null,          // beta (front-back tilt) in degrees
+    model: null,         // { lines, points } in local east/north meters
+    originIsFallback: false,
   };
 
   const CONFIG = {
@@ -48,6 +50,40 @@
     els.error.classList.remove("hidden");
   }
 
+  // Build the combined render model (local east/north meters) once we have an
+  // origin. Offset features are used as-is; GeoJSON absolute coords are
+  // converted relative to the origin.
+  function setOrigin(origin, isFallback) {
+    if (state.origin) return;
+    state.origin = origin;
+    state.originIsFallback = !!isFallback;
+
+    const lines = window.UTILITIES.lines.map((l) => ({
+      type: l.type, label: l.label, depth: l.depth, path: l.path,
+    }));
+
+    const gj = window.GEOJSON;
+    if (gj && gj.features) {
+      for (const f of gj.features) {
+        if (!f.geometry || f.geometry.type !== "LineString") continue;
+        const p = f.properties || {};
+        lines.push({
+          type: p.type || "water",
+          label: p.label || "GIS Line",
+          depth: typeof p.depth === "number" ? p.depth : 1.0,
+          path: f.geometry.coordinates.map(([lng, lat]) =>
+            Geo.toLocal(origin, { lat, lng })
+          ),
+        });
+      }
+    }
+
+    state.model = { lines, points: window.UTILITIES.points };
+    if (isFallback) {
+      showError("Using demo location (GPS unavailable). Overlay anchored to sample data.");
+    }
+  }
+
   // ---- Camera ----------------------------------------------------------
   async function startCamera() {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -68,17 +104,26 @@
       (pos) => {
         const { latitude, longitude, accuracy } = pos.coords;
         state.position = { lat: latitude, lng: longitude, accuracy };
-        if (!state.origin) state.origin = { lat: latitude, lng: longitude };
+        setOrigin({ lat: latitude, lng: longitude }, false);
         const cls = accuracy <= 15 ? "ok" : accuracy <= 40 ? "warn" : "";
         els.gpsDot.className = "dot " + cls;
         els.gpsText.textContent = `GPS: ±${Math.round(accuracy)}m`;
       },
       (err) => {
-        els.gpsText.textContent = "GPS: denied";
-        showError("Location error: " + err.message);
+        els.gpsText.textContent = "GPS: " + (err.code === 1 ? "denied" : "unavailable");
+        // Don't hard-fail — fall back so the demo still renders.
+        setOrigin(window.DEFAULT_ORIGIN, true);
       },
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
     );
+
+    // Safety net: if no fix (and no error) arrives, anchor to the demo origin.
+    setTimeout(() => {
+      if (!state.origin) {
+        els.gpsText.textContent = "GPS: timeout";
+        setOrigin(window.DEFAULT_ORIGIN, true);
+      }
+    }, 8000);
   }
 
   // ---- Device orientation (compass heading + tilt) ---------------------
@@ -148,8 +193,7 @@
   }
 
   function drawLines(basis, screen, user) {
-    const W = window.UTILITIES.lines;
-    for (const line of W) {
+    for (const line of state.model.lines) {
       const color = colorFor(line.type);
       const pts = Geo.densify(line.path, CONFIG.densifyStep).map((v) => {
         const rel = relVector(v, user, line.depth);
@@ -179,7 +223,7 @@
   }
 
   function drawPoints(basis, screen, user) {
-    for (const pt of window.UTILITIES.points) {
+    for (const pt of state.model.points) {
       const rel = relVector(pt, user, pt.depth);
       const p = Geo.project(rel, basis, screen);
       if (!p.visible) continue;
@@ -237,7 +281,7 @@
     const W = window.innerWidth, H = window.innerHeight;
     ctx.clearRect(0, 0, W, H);
 
-    if (state.origin && state.heading !== null) {
+    if (state.model && state.heading !== null) {
       const pitch = state.tilt !== null ? state.tilt - 90 : 0;
       const basis = Geo.cameraBasis(state.heading, pitch);
       const screen = { w: W, h: H, hfov: CONFIG.hfov };
@@ -253,8 +297,11 @@
     els.launch.disabled = true;
     els.launch.textContent = "Starting…";
 
-    // Kick off the motion-permission request FIRST, inside the gesture.
+    // Kick off permission requests FIRST, inside the gesture, before any
+    // await — iOS drops the gesture context once the camera promise resolves,
+    // which otherwise makes geolocation and motion auto-deny.
     const orientationPromise = requestOrientationPermission();
+    startGeolocation();
 
     try {
       await startCamera();
@@ -265,7 +312,6 @@
       return;
     }
     resizeCanvas();
-    startGeolocation();
 
     try {
       const res = await orientationPromise;

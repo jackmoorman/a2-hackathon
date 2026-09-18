@@ -48,3 +48,27 @@ window.UTILITIES = {
     { id: "h-1", type: "hydrant", label: "Hydrant", depth: 0, east: 18, north: 8 },
   ],
 };
+
+// Real-world GIS features in absolute lat/lng (GeoJSON). These are converted
+// to the local frame at launch relative to the GPS origin. Visible when you
+// are physically near them; if GPS is unavailable we anchor the origin to the
+// first coordinate here so they still render for the demo.
+window.GEOJSON = {
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      properties: { type: "water", label: "Water Main (GIS)", depth: 1.2 },
+      geometry: {
+        type: "LineString",
+        coordinates: [
+          [-84.4089701, 40.2345297],
+          [-84.4052404, 40.2350322],
+        ],
+      },
+    },
+  ],
+};
+
+// First GeoJSON coordinate, used as a fallback origin if GPS is denied/absent.
+window.DEFAULT_ORIGIN = { lng: -84.4089701, lat: 40.2345297 };
